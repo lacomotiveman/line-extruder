@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title>Line Extruder</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+<style>
+			html, body {
+				height: 100%;
+			}
+
+			body {
+				background-color: #050505;
+				background: radial-gradient(ellipse at center,  rgba(43,45,48,1) 0%,rgba(0,0,0,1) 100%);
+
+				margin: 0;
+				font-family: Arial;
+				overflow: hidden;
+			}
+
+			a {
+				color: #ffffff;
+			}
+
+			#topmenu {
+				position: absolute;
+				top: 10px;
+				right: 10px;
+				width: 100%;
+				text-align: right;
+				padding: 0;
+				margin: 0;
+				z-index: 1;
+			}
+
+			button {
+				color: black;
+				background: transparent;
+				border: 1px solid black;
+				padding: 5px 10px;
+				cursor: pointer;
+			}
+			.button_enabled{
+				background-color: rgba(255,0,0,0.5);
+			}
+
+			button:hover {
+				background-color: rgba(0,255,0,0.5);
+			}
+			button:active {
+				color: #000000;
+				background-color: rgba(0,255,255,1);
+			}
+
+		</style>
+		</style>
+	</head>
+	<body>
+
+		<script src="three.r103.js"></script>
+
+		<script src="stats.min.js"></script>
+		<script src="OrbitControls.js"></script>
+		<script src="WebGL.js"></script>
+		<div id="topmenu">
+			<button id="DRAW_LINE_MODE" onClick="onDrawLineMode()">DRAW LINE MODE</button>
+			<button id="EXTRUDE" onClick="onExtrude()">EXTRUDE</button>
+			<input id="EXTRUDE_HEIGHT" value="150">
+			<button id="CLEAR" onClick="onClear()">CLEAR</button>
+		</div>
+		<script>
+			// проверка на совместимость устройства с WebGl 1.0
+			if ( WEBGL.isWebGLAvailable() === false ) {
+				document.body.appendChild( WEBGL.getWebGLErrorMessage() );
+			}
+
+			var camera, scene, renderer;
+			var viewportControls;
+			var plane, cube;
+			var mouse, raycaster, isShiftDown = false;
+			var rollOverMesh, rollOverMaterial;
+			var cubeGeo, cubeMaterial;
+
+			var objects = []; // объекты для вычисления через raycaster
+			var editor_mode = 'DISABLED'; // флаг режима рисования
+
+			// экструдер
+			var extruderStore = {
+				lineToExtrude: null,	// результирующий объект кривой
+				lineToExtrudeGeo:null,  // геометрия кривой
+				lineToExtrudeMat: null, // материал(шейдер) для кривой
+				lineToExtrudePos: null, // позиции точек кривой для экструдирования
+				extrudedMesh: null,	 // результирующий отэкструдированный меш, который потом записываетс  в сцену
+				flag_extruded:false, // флаг, проводилось экструдирование, или нет
+				MAX_POINTS: 100,	// максимальное количество точек в кривой для экструдирования
+				drawCount: 0 //количество сегментов в линии для экструдирования
+			};
+
+			init();
+			render();
+
+			function init() {
+
+				camera = new THREE.PerspectiveCamera( 45, window.innerWidth / window.innerHeight, 1, 10000 );
+				camera.position.set( 500, 800, 1300 );
+				camera.lookAt( 0, 0, 0 );
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color( 0xaaaaaa );
+				// roll-over helpers
+				var rollOverGeo = new THREE.BoxBufferGeometry( 20, 20, 20 );
+				rollOverMaterial = new THREE.MeshBasicMaterial( { color: 0x00ff00, opacity: 0.5, transparent: true } );
+				rollOverMesh = new THREE.Mesh( rollOverGeo, rollOverMaterial );
+				scene.add( rollOverMesh );
+				// cubes
+				cubeGeo = new THREE.BoxBufferGeometry( 20, 20, 20 );
+				cubeMaterial = new THREE.MeshLambertMaterial( { color: 0xfeb74c } );
+				// grid
+				var gridHelper = new THREE.GridHelper( 1000, 20 );
+				scene.add( gridHelper );
+				//
+				raycaster = new THREE.Raycaster();
+				mouse = new THREE.Vector2();
+				var geometry = new THREE.PlaneBufferGeometry( 1000, 1000 );
+				geometry.rotateX( - Math.PI / 2 );
+				plane = new THREE.Mesh( geometry, new THREE.MeshBasicMaterial( { visible: false } ) );
+				scene.add( plane );
+				objects.push( plane );
+
+				// инициализация экструдера
+				extruderStore.lineToExtrudeMat = new THREE.LineBasicMaterial( { color: 0xff0000 } );
+				extruderStore.lineToExtrudeGeo = new THREE.BufferGeometry(),
+				extruderStore.lineToExtrudePos = new Float32Array( extruderStore.MAX_POINTS * 3 ); // 3 vertices per point
+				extruderStore.lineToExtrudeGeo.addAttribute( 'position', new THREE.BufferAttribute( extruderStore.lineToExtrudePos, 3 ) );
+				extruderStore.lineToExtrude = new THREE.Line( extruderStore.lineToExtrudeGeo, extruderStore.lineToExtrudeMat );;
+				scene.add(extruderStore.lineToExtrude);
+
+				// lights
+				var ambientLight = new THREE.AmbientLight( 0x606060 );
+				scene.add( ambientLight );
+				var directionalLight = new THREE.DirectionalLight( 0xffffff );
+				directionalLight.position.set( 1, 0.75, 0.5 ).normalize();
+				scene.add( directionalLight );
+				// rendering settings
+				renderer = new THREE.WebGLRenderer( { antialias: true } );
+				renderer.setPixelRatio( window.devicePixelRatio );
+				renderer.setSize( window.innerWidth, window.innerHeight );
+				document.body.appendChild( renderer.domElement );
+
+				viewportControls = new THREE.OrbitControls(camera, renderer.domElement);
+
+				document.addEventListener( 'mousemove', onDocumentMouseMove, false );
+				document.addEventListener( 'mousedown', onDocumentMouseDown, false );
+				document.addEventListener( 'keydown', onDocumentKeyDown, false );
+				document.addEventListener( 'keyup', onDocumentKeyUp, false );
+
+				window.addEventListener( 'resize', onWindowResize, false );
+			}
+
+			function onWindowResize() {
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize( window.innerWidth, window.innerHeight );
+			}
+
+			function onDocumentMouseMove( event ) {
+				event.preventDefault();
+				mouse.set( ( event.clientX / window.innerWidth ) * 2 - 1, - ( event.clientY / window.innerHeight ) * 2 + 1 );
+				raycaster.setFromCamera( mouse, camera );
+				var intersects = raycaster.intersectObjects( objects );
+				if ( intersects.length > 0 ) {
+					var intersect = intersects[ 0 ];
+					rollOverMesh.position.copy( intersect.point ).add( intersect.face.normal );
+					rollOverMesh.position.divideScalar( 50 ).floor().multiplyScalar( 50 );
+				}
+				render();
+			}
+
+			function onDocumentMouseDown( event ) {
+				event.preventDefault();
+				if(editor_mode=='ENABLED'){
+					mouse.set( ( event.clientX / window.innerWidth ) * 2 - 1, - ( event.clientY / window.innerHeight ) * 2 + 1 );
+					raycaster.setFromCamera( mouse, camera );
+					var intersects = raycaster.intersectObjects( objects );
+					if ( intersects.length > 0 ) {
+						var intersect = intersects[ 0 ];
+						// удалить метку
+						if ( isShiftDown ) {
+							if ( intersect.object !== plane ) {
+								scene.remove( intersect.object );
+								objects.splice( objects.indexOf( intersect.object ), 1 );
+							}
+							// поставить метку
+						} else {
+							var voxel = new THREE.Mesh( cubeGeo, cubeMaterial );
+							voxel.position.copy( intersect.point ).add( intersect.face.normal );
+							voxel.position.divideScalar( 50 ).floor().multiplyScalar( 50 );
+							scene.add( voxel );
+							objects.push( voxel );
+
+							var index = 0;
+							var positions = extruderStore.lineToExtrude.geometry.attributes.position.array;
+							if(extruderStore.drawCount<extruderStore.MAX_POINTS){
+
+								index = 3*extruderStore.drawCount;
+								positions[ index ++ ] = voxel.position.x;
+								positions[ index ++ ] = voxel.position.y;
+								positions[ index ++ ] = voxel.position.z;
+								extruderStore.drawCount++;
+								// увеличиваем количество сегментов для прорисовки
+								extruderStore.lineToExtrude.geometry.setDrawRange( 0, extruderStore.drawCount );
+
+								if((extruderStore.drawCount>=1)){
+									extruderStore.lineToExtrude.geometry.attributes.position.needsUpdate = true;
+								}
+							}else{
+								console.log("Слишком сложная фигура");
+							}
+						}
+						render();
+					}
+				}
+			}
+			//
+			function onDocumentKeyDown( event ) {
+				switch ( event.keyCode ) {
+					case 16: isShiftDown = true; break;
+				}
+			}
+
+			function onDocumentKeyUp( event ) {
+				switch ( event.keyCode ) {
+					case 16: isShiftDown = false; break;
+				}
+			}
+
+			function render() {
+				renderer.render( scene, camera );
+			}
+
+			// для развитого функционала здесь, по хорошему, нужно хранилище
+			// состояний и объектов сцены
+
+			function onDrawLineMode(){
+				if(editor_mode=='DISABLED'){
+					editor_mode ='ENABLED';
+					document.getElementById('DRAW_LINE_MODE').className = "button_enabled";
+				}else{
+					editor_mode ='DISABLED';
+					document.getElementById('DRAW_LINE_MODE').className = "";
+				}
+			}
+
+			function onExtrude(){
+				if(extruderStore.drawCount>1){
+
+					var extrudeSettings = {
+						steps: 1,
+						depth: document.getElementById("EXTRUDE_HEIGHT").value,
+						bevelEnabled: false
+					};
+
+					var shapeToExtrude = new THREE.Shape();
+					var cnt = 0;
+					var x=extruderStore.lineToExtrude.geometry.attributes.position.array[0];
+					var y=extruderStore.lineToExtrude.geometry.attributes.position.array[2];
+
+					shapeToExtrude.moveTo(x,y);
+					for(cnt = 1; cnt<extruderStore.drawCount; cnt++){
+						x = extruderStore.lineToExtrude.geometry.attributes.position.array[cnt*3];
+						y = extruderStore.lineToExtrude.geometry.attributes.position.array[cnt*3+2];
+						shapeToExtrude.lineTo(x,y);
+					}
+
+					var extrudedGeo = new THREE.ExtrudeGeometry( shapeToExtrude, extrudeSettings );
+					var extrudedMat = new THREE.MeshStandardMaterial( { color: 0x00ff00 } );
+					extruderStore.extrudedMesh = new THREE.Mesh( extrudedGeo, extrudedMat ) ;
+					extruderStore.extrudedMesh.rotation.x = Math.PI/2;
+					extruderStore.extrudedMesh.position.y+=extrudeSettings.depth;
+					scene.add( extruderStore.extrudedMesh );
+					extruderStore.flag_extruded = true;
+					render();
+				}else{
+					console.log('Нечего экструдировать!');
+				}
+			}
+
+			function onClear(){
+				if(extruderStore.flag_extruded == true){
+					scene.remove(extruderStore.extrudedMesh);
+					extruderStore.flag_extruded == false;
+					render();
+				}
+			}
+
+		</script>
+
+	</body>
+</html>
